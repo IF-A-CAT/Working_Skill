@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Graph</title>
+<!-- media="print" + onload keeps the CDN stylesheet off the critical path: a plain
+     <link rel=stylesheet> blocks first paint until the CDN responds, so an
+     unreachable jsdelivr shows as a blank page. Formulas fall back to raw LaTeX
+     when KaTeX never arrives, so nothing here is required for the graph to draw. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+      media="print" onload="this.media='all'">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<style>
+:root {
+  --bg: #f7f7f5; --fg: #1a1a1a; --muted: #6b6b6b; --panel-bg: #ffffff;
+  --border: #e2e2de; --accent: #4a6cf7; --node-stroke: #ffffff;
+  --c-bg: #e8734a; --c-inn: #4a9df7; --c-exp: #3fae7c; --c-con: #8a63d2;
+  --c-ref: #9c9c93; --c-fut: #d9a13b; --c-res: #2fa8a0;
+  --shadow: 0 2px 16px rgba(0,0,0,.08);
+  --wedge-op: .07;
+}
+:root[data-theme="dark"] {
+  --bg: #16161a; --fg: #e8e8e4; --muted: #9a9a94; --panel-bg: #1f1f26;
+  --border: #33333c; --accent: #7d93ff; --node-stroke: #16161a;
+  --c-bg: #ff8c5f; --c-inn: #5fa8ff; --c-exp: #4ec98f; --c-con: #a97ef5;
+  --c-ref: #8a8a82; --c-fut: #f0b954; --c-res: #3ec9bf;
+  --shadow: 0 2px 16px rgba(0,0,0,.4);
+  --wedge-op: .09;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--fg); overflow: hidden;
+}
+#stage { position: fixed; inset: 0; cursor: grab; }
+#stage.dragging { cursor: grabbing; }
+svg { width: 100%; height: 100%; display: block; }
+
+/* graph elements */
+.wedge { fill-opacity: var(--wedge-op); transition: fill-opacity .3s; }
+.wedge.dim { fill-opacity: .02; }
+.edge { fill: none; stroke-width: 1.4; opacity: .35; transition: opacity .2s, stroke-width .2s; }
+.edge.trunk { stroke-width: 2.2; opacity: .5; }
+.edge.hi { opacity: 1; stroke-width: 2.6; }
+.edge.off { opacity: 0; }
+.node { cursor: pointer; }
+.hidden { display: none; }
+.node .in {
+  transform-box: fill-box; transform-origin: center;
+  transition: transform .18s ease, opacity .25s ease;
+  animation: pop .5s cubic-bezier(.2,.8,.3,1.2) backwards;
+}
+.node:hover .in { transform: scale(1.35); }
+.node.off .in { opacity: 0; }
+.node.off { pointer-events: none; }
+.node.dimmed .in { opacity: .1; }
+@keyframes pop { from { opacity: 0; transform: scale(.3); } }
+.pill { fill: var(--panel-bg); fill-opacity: .92; stroke: var(--border); stroke-width: 1; }
+.pill-text { font-size: 11px; fill: var(--fg); text-anchor: middle; }
+.pill-b { fill-opacity: 1; stroke: var(--node-stroke); stroke-width: 1.5; }
+.pill-text-b { font-size: 12px; font-weight: 600; fill: #fff; text-anchor: middle; }
+.root-title { font-size: 12.5px; font-weight: 700; fill: var(--fg); text-anchor: middle; }
+.badge-t { font-size: 9.5px; font-weight: 700; fill: #fff; text-anchor: middle; }
+.hover-pill { pointer-events: none; }
+
+/* header card */
+#hdr {
+  position: fixed; top: 14px; left: 14px; max-width: 380px;
+  background: var(--panel-bg); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; box-shadow: var(--shadow);
+  font-size: 12px; line-height: 1.5; z-index: 10;
+}
+#hdr .t { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
+#hdr .m { color: var(--muted); }
+#hdr .s { margin-top: 6px; }
+#hdr .hint { font-size: 10.5px; color: var(--muted); opacity: .8; margin-top: 8px; }
+
+/* toolbar */
+#bar {
+  position: fixed; top: 14px; right: 14px; z-index: 10;
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  justify-content: flex-end; max-width: 46vw;
+}
+#bar input {
+  width: 170px; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--panel-bg); color: var(--fg);
+  font-size: 12px; outline: none;
+}
+#bar button {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-bg); color: var(--fg); font-size: 12px;
+  cursor: pointer;
+}
+#bar button:hover { border-color: var(--accent); }
+
+/* detail panel */
+#panel {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 380px; z-index: 20;
+  background: var(--panel-bg); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow); transform: translateX(105%);
+  transition: transform .22s ease; display: flex; flex-direction: column;
+}
+#panel.open { transform: none; }
+#panel .head {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 16px 16px 10px; border-bottom: 1px solid var(--border);
+}
+#panel .badge {
+  flex: none; margin-top: 3px; padding: 2px 8px; border-radius: 20px;
+  color: #fff; font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+#panel h2 { font-size: 15px; line-height: 1.45; flex: 1; }
+#panel .close {
+  flex: none; border: none; background: none; color: var(--muted);
+  font-size: 18px; cursor: pointer; padding: 2px 4px;
+}
+#panel .body { padding: 14px 16px; overflow-y: auto; font-size: 13px; line-height: 1.7; }
+#panel .body p { margin-bottom: 10px; }
+#panel .kv { margin-bottom: 12px; }
+#panel .kv .k { color: var(--muted); font-size: 11.5px; margin-bottom: 2px; }
+#panel .metrics {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; margin-bottom: 12px; font-size: 12.5px;
+}
+#panel .abstract { color: var(--muted); font-size: 12.5px; }
+#panel .source {
+  display: inline-block; padding: 1px 8px; margin-bottom: 10px;
+  border-radius: 12px; font-size: 11px;
+  background: color-mix(in srgb, var(--c-fut) 15%, transparent);
+  color: color-mix(in srgb, var(--c-fut) 70%, var(--fg));
+}
+#panel .actions { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 8px; }
+#panel .actions a {
+  display: inline-block; padding: 6px 12px; border-radius: 8px;
+  border: 1px solid var(--border); color: var(--fg);
+  font-size: 12px; text-decoration: none;
+}
+#panel .actions a:hover { border-color: var(--accent); color: var(--accent); }
+#panel .actions a.primary {
+  border-color: var(--accent); color: var(--accent); font-weight: 600;
+}
+#panel .actions a.primary:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+#panel .tag {
+  display: inline-block; padding: 1px 8px; margin-right: 6px;
+  border-radius: 12px; font-size: 11px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent); margin-bottom: 8px;
+}
+#stat {
+  position: fixed; bottom: 14px; right: 14px; z-index: 10;
+  color: var(--muted); font-size: 11px;
+}
+/* rich content blocks (panel) */
+#panel .back {
+  display: inline-block; font-size: 12px; color: var(--accent);
+  cursor: pointer; margin-bottom: 10px;
+}
+.formula { overflow-x: auto; padding: 8px 4px; text-align: center; }
+.latex-src {
+  display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; color: var(--muted); padding: 8px 10px; white-space: pre-wrap;
+  word-break: break-all; border: 1px dashed var(--border); border-radius: 6px;
+}
+#panel figure { margin: 0 0 12px; }
+#panel figure img {
+  max-width: 100%; display: block; border-radius: 8px;
+  border: 1px solid var(--border);
+}
+#panel figcaption { font-size: 11.5px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.img-fallback {
+  font-size: 12px; color: var(--muted); padding: 16px 10px; text-align: center;
+  border: 1px dashed var(--border); border-radius: 8px;
+}
+.tbl-cap { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; line-height: 1.5; }
+.tbl-wrap { overflow-x: auto; margin-bottom: 12px; }
+#panel table { border-collapse: collapse; font-size: 12px; width: 100%; }
+#panel th, #panel td {
+  padding: 5px 9px; border-bottom: 1px solid var(--border);
+  text-align: right; white-space: nowrap;
+}
+#panel th:first-child, #panel td:first-child { text-align: left; }
+#panel th { color: var(--muted); font-weight: 600; font-size: 11px; }
+#panel tr.hl td {
+  background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 600;
+}
+ul.blist { margin: 0 0 12px 18px; }
+ul.blist li { margin-bottom: 4px; }
+.children .child-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; cursor: pointer;
+}
+.children .child-row:hover { border-color: var(--accent); }
+.children .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.children .cl { flex: 1; font-size: 12.5px; }
+.children .cm { color: var(--muted); font-size: 11px; text-align: right; max-width: 45%; }
+
+@media (max-width: 720px) {
+  #panel { width: 100vw; }
+  #hdr { max-width: calc(100vw - 90px); }
+  #bar input { width: 110px; }
+}
+/* Shown only when the boot script did not finish (see #boot-warn in <body>). */
+#boot-warn {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 50; max-width: 560px; padding: 20px 24px;
+  background: var(--panel-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  font-size: 13.5px; line-height: 1.65;
+}
+#boot-warn ul { margin: 8px 0 0; padding-left: 18px; }
+#boot-warn li { margin: 4px 0; }
+#boot-warn code { font-size: 12.5px; }
+#boot-warn .bw-info {
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 12.5px; word-break: break-all;
+}
+</style>
+</head>
+<body>
+<!-- Visible by default and hidden by the boot script on the success path —
+     that hide happens during HTML parsing, before first paint, so a working
+     page never flashes this. If the graph does NOT draw, this is what the
+     reader sees instead of an unexplained blank page. -->
+<div id="boot-warn">
+  <b>图形未能渲染。</b>
+  <div>本页的节点全部由内联脚本用 JS 生成，看到这条提示说明脚本没有跑完。常见原因：</div>
+  <ul>
+    <li>IDE 的 Live Preview / webview 拦截了内联脚本（CSP）——请改用浏览器直接打开此文件</li>
+    <li>预览面板尺寸为 0，或页面在拿到真实尺寸前就完成了布局</li>
+    <li>页面报错，或 <code>&lt;script&gt;</code> 被浏览器扩展拦截</li>
+  </ul>
+  <div class="bw-info" id="bw-info">诊断：脚本未执行到末尾。</div>
+</div>
+
+<div id="stage"><svg id="svg"></svg></div>
+
+<div id="hdr"></div>
+
+<div id="bar">
+  <input id="search" type="search" placeholder="搜索节点…">
+  <button id="btn-expand" title="展开全部">展开</button>
+  <button id="btn-collapse" title="折叠全部">折叠</button>
+  <button id="btn-theme" title="切换明暗">◐</button>
+  <button id="btn-fit" title="适配视图">⤢</button>
+</div>
+
+<div id="stat"></div>
+
+<div id="panel">
+  <div class="head">
+    <span class="badge" id="p-badge"></span>
+    <h2 id="p-title"></h2>
+    <button class="close" id="p-close">✕</button>
+  </div>
+  <div class="body" id="p-body"></div>
+</div>
+
+<script>
+const DATA = __GRAPH_DATA__;
+
+/* ================= config ================= */
+const BRANCHES = [
+  { key: "background",  cls: "c-bg",  fallback: "研究背景" },
+  { key: "innovations", cls: "c-inn", fallback: "核心创新" },
+  { key: "experiments", cls: "c-exp", fallback: "实验与结果" },
+  { key: "conclusions", cls: "c-con", fallback: "结论" },
+  { key: "references",  cls: "c-ref", fallback: "引用网络" },
+  { key: "future",      cls: "c-fut", fallback: "未来方向" },
+];
+/* the resources sector (code / dataset / demos / docs) only exists when the
+   distillation found artifacts — papers without public artifacts stay at 6 */
+if ((DATA.artifacts || []).length) {
+  BRANCHES.push({ key: "resources", cls: "c-res", fallback: "资源" });
+}
+const BRANCH_KEY = Object.fromEntries(BRANCHES.map(b => [b.key, b]));
+const R = { root: 30, branch: 13, point: 9, ref: 7, future: 8 };
+const RAD_BRANCH = 225, RING_IN = 400, RING_OUT = 480, RING_CHILD = 60;
+const WEDGE_IN = 175, WEDGE_OUT = 545;
+
+function esc(s) { return String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;"); }
+function trunc(s, n) { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+/* rough text width: CJK/fullwidth ≈ 1em, latin ≈ 0.58em */
+function textW(s, fs) {
+  let w = 0;
+  for (const ch of String(s)) w += ch.charCodeAt(0) > 0x2E7F ? fs : fs * .58;
+  return w;
+}
+/* greedy line split so each line stays ≤ maxW */
+function pillLines(label, fs, maxW, maxLines = 2) {
+  const lines = []; let cur = "";
+  for (const ch of label) {
+    if (textW(cur + ch, fs) > maxW && cur) { lines.push(cur); cur = ch; }
+    else cur += ch;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, maxLines);
+}
+
+/* ================= build graph model ================= */
+const nodes = [], byId = {};
+function addNode(n) { byId[n.id] = n; nodes.push(n); return n; }
+const meta = DATA.meta || {};
+
+const rootNode = addNode({
+  id: "__root__", type: "root", label: meta.title || "Paper", r: R.root, group: null,
+});
+
+const sectors = [];  /* { key, a0, a1, branchNode, leaves } */
+for (const b of BRANCHES) {
+  const src = (DATA.branches && DATA.branches[b.key]) || null;
+  let kids = [];
+  if (b.key === "references") kids = DATA.references || [];
+  else if (b.key === "future") kids = DATA.future || [];
+  else if (b.key === "resources") kids = DATA.artifacts || [];
+  else if (src && Array.isArray(src.points)) kids = src.points;
+
+  const bn = addNode({
+    id: "__b_" + b.key, type: "branch", key: b.key,
+    label: (src && src.label) || b.fallback, r: R.branch,
+    group: b.key, color: b.cls,
+    summary: (src && src.summary) || "",
+    collapsed: false,
+  });
+  const leaves = [];
+  for (const k of kids) {
+    if (!k || !k.id) continue;
+    const n = addNode(Object.assign({ r: R[k.type] || 9, group: b.key, color: b.cls }, k));
+    n.type = k.type || "point";
+    n.label = k.label || k.title || k.id;
+    n.parent = bn;
+    leaves.push(n);
+    /* nested children (extension: sub-graphs under a node) */
+    const subs = [];
+    for (const c of (k.children || [])) {
+      if (!c || !c.id) continue;
+      const cn = addNode(Object.assign({ r: 6, group: b.key, color: b.cls }, c));
+      cn.type = c.type || "ref";
+      cn.label = c.label || c.title || c.id;
+      cn.parent = n;
+      subs.push(cn);
+    }
+    n.kids = subs;
+  }
+  sectors.push({ key: b.key, cls: b.cls, branchNode: bn, leaves, a0: 0, a1: 0 });
+}
+
+/* ================= deterministic radial layout =================
+   Sectors sized by compressed leaf count; leaves alternate two rings;
+   every position is computed once — nothing can drift or collapse. */
+/* Viewport metrics come from #stage's own box, never straight from
+   window.innerWidth/innerHeight. An embedded preview (IDE live preview,
+   webview, iframe in a not-yet-sized pane) can report a 0-sized or stale
+   window while the element itself has a real size — and a 0 here collapsed
+   the entire graph onto a single point. Cached in VW/VH so the per-node
+   cx()/cy() stay cheap. */
+let VW = 0, VH = 0;
+function measure() {
+  const el = document.getElementById("stage");
+  VW = (el && el.clientWidth) || window.innerWidth || 0;
+  VH = (el && el.clientHeight) || window.innerHeight || 0;
+  if (!(VW > 0)) VW = 1200;
+  if (!(VH > 0)) VH = 800;
+  return { W: VW, H: VH };
+}
+function cx() { return VW / 2; }
+function cy() { return VH / 2; }
+function computeLayout() {
+  measure();
+  const weights = sectors.map(s => Math.pow(Math.max(s.leaves.length, 2), .68));
+  const wsum = weights.reduce((a, b) => a + b, 0);
+  let a0 = -Math.PI / 2;
+  sectors.forEach((s, i) => {
+    const span = 2 * Math.PI * weights[i] / wsum;
+    s.a0 = a0; s.a1 = a0 + span;
+    const am = a0 + span / 2;
+    s.branchNode.x = cx() + RAD_BRANCH * Math.cos(am);
+    s.branchNode.y = cy() + RAD_BRANCH * Math.sin(am);
+    s.leaves.forEach((k, j) => {
+      const ang = a0 + span * (j + .5) / s.leaves.length;
+      const ring = j % 2 ? RING_OUT : RING_IN;
+      k.x = cx() + ring * Math.cos(ang);
+      k.y = cy() + ring * Math.sin(ang);
+      (k.kids || []).forEach((c, m) => {
+        const a2 = ang - .3 + (k.kids.length > 1 ? m * .6 / (k.kids.length - 1) : .15);
+        c.x = cx() + (ring + RING_CHILD) * Math.cos(a2);
+        c.y = cy() + (ring + RING_CHILD) * Math.sin(a2);
+      });
+    });
+    a0 += span;
+  });
+  rootNode.x = cx(); rootNode.y = cy();
+}
+
+/* ================= svg render ================= */
+const svg = document.getElementById("svg");
+const NS = "http://www.w3.org/2000/svg";
+const gZoom = document.createElementNS(NS, "g"); svg.appendChild(gZoom);
+const gWedge = document.createElementNS(NS, "g"); gZoom.appendChild(gWedge);
+const gEdge = document.createElementNS(NS, "g"); gZoom.appendChild(gEdge);
+const gNode = document.createElementNS(NS, "g"); gZoom.appendChild(gNode);
+
+const nodeEls = new Map();   /* node -> { g, edge } */
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  (parent || gNode).appendChild(e);
+  return e;
+}
+function wedgePath(a0, a1, r0, r1) {
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  const p = (a, r) => `${cx() + r * Math.cos(a)},${cy() + r * Math.sin(a)}`;
+  return `M ${p(a0, r0)} L ${p(a0, r1)} A ${r1} ${r1} 0 ${large} 1 ${p(a1, r1)}` +
+         ` L ${p(a1, r0)} A ${r0} ${r0} 0 ${large} 0 ${p(a0, r0)} Z`;
+}
+function edgePath(a, b) {
+  /* gentle curve: control point pulled toward center */
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const qx = mx + (cx() - mx) * .18, qy = my + (cy() - my) * .18;
+  return `M ${a.x} ${a.y} Q ${qx} ${qy} ${b.x} ${b.y}`;
+}
+
+function render() {
+  gWedge.innerHTML = ""; gEdge.innerHTML = ""; gNode.innerHTML = "";
+  nodeEls.clear();
+
+  for (const s of sectors) {
+    s.wedgeEl = el("path", {
+      class: "wedge", d: wedgePath(s.a0, s.a1, WEDGE_IN, WEDGE_OUT),
+      fill: `var(--${s.cls})`,
+    }, gWedge);
+    /* trunk: root -> branch */
+    el("path", {
+      class: "edge trunk", d: `M ${rootNode.x} ${rootNode.y} L ${s.branchNode.x} ${s.branchNode.y}`,
+      stroke: `var(--${s.cls})`,
+    }, gEdge);
+  }
+
+  for (const n of nodes) {
+    const g = el("g", { class: "node", transform: `translate(${n.x},${n.y})` });
+    const inG = el("g", { class: "in" }, g);
+    /* stagger entrance by depth */
+    inG.style.animationDelay = (n.type === "root" ? 0 : n.type === "branch" ? 90 : 200) + "ms";
+
+    if (n.type === "root") {
+      el("circle", { r: n.r, fill: "var(--accent)", stroke: "var(--node-stroke)", "stroke-width": 3 }, inG);
+      const t = el("text", { class: "root-title", y: -n.r - 14 }, inG);
+      t.textContent = trunc(n.label, 38);
+    } else if (n.type === "artifact") {
+      /* square = an external link, visually distinct from content dots */
+      el("rect", { x: -8, y: -8, width: 16, height: 16, rx: 4,
+                   fill: `var(--${n.color})`, stroke: "var(--node-stroke)", "stroke-width": 1.5 }, inG);
+      const label = trunc(n.label, 18), fs = 11;
+      const lines = pillLines(label, fs, 150);
+      const w = Math.max(...lines.map(l => textW(l, fs)));
+      const lh = 13, h = lines.length * lh + 6;
+      const pg = el("g", { transform: `translate(0,${16 + h / 2})` }, inG);
+      el("rect", { class: "pill", x: -w / 2 - 8, y: -h / 2, width: w + 16, height: h, rx: 9.5 }, pg);
+      lines.forEach((line, i) => {
+        const pt = el("text", { class: "pill-text",
+                                y: (i - (lines.length - 1) / 2) * lh + 3.5 }, pg);
+        pt.textContent = line;
+      });
+    } else {
+      el("circle", { r: n.r, fill: `var(--${n.color})`, stroke: "var(--node-stroke)", "stroke-width": 1.5 }, inG);
+
+      if (n.type === "branch") {
+        /* label pill — fill via inline style: CSS class rules override SVG
+           presentation attributes, and .pill's white fill would hide this */
+        const label = n.label, fs = 12, w = textW(label, fs);
+        const pg = el("g", { transform: `translate(0,${n.r + 18})` }, inG);
+        el("rect", { class: "pill-b", x: -w / 2 - 9, y: -12, width: w + 18, height: 20, rx: 10, style: `fill:var(--${n.color})` }, pg);
+        const pt = el("text", { class: "pill-text-b", y: 2.5 }, pg);
+        pt.textContent = label;
+        /* count badge */
+        const count = (sectors.find(s => s.branchNode === n) || {}).leaves?.length || 0;
+        if (count) {
+          const bg = el("g", { transform: `translate(${n.r * .72},${-n.r * .72})` }, inG);
+          el("circle", { r: 8.5, fill: `var(--${n.color})`, stroke: "var(--bg)", "stroke-width": 2 }, bg);
+          const bt = el("text", { class: "badge-t", y: 3.5 }, bg);
+          bt.textContent = count;
+        }
+      } else if (n.type === "point" || n.type === "future") {
+        /* permanent label pill — wraps to 2 lines when wide, so pills
+           never overlap on tightly-packed rings */
+        const label = trunc(n.label, 18), fs = 11;
+        const lines = pillLines(label, fs, 150);
+        const w = Math.max(...lines.map(l => textW(l, fs)));
+        const lh = 13, h = lines.length * lh + 6;
+        const pg = el("g", { transform: `translate(0,${n.r + 12 + h / 2})` }, inG);
+        el("rect", { class: "pill", x: -w / 2 - 8, y: -h / 2, width: w + 16, height: h, rx: 9.5 }, pg);
+        lines.forEach((line, i) => {
+          const pt = el("text", {
+            class: "pill-text",
+            y: (i - (lines.length - 1) / 2) * lh + 3.5,
+          }, pg);
+          pt.textContent = line;
+        });
+      }
+      /* refs & nested children: dot only — label appears on hover */
+    }
+
+    /* curved edge from parent */
+    if (n.parent) {
+      n.__edgeEl = el("path", {
+        class: "edge", d: edgePath(n.parent, n), stroke: `var(--${n.color})`,
+      }, gEdge);
+    }
+
+    g.addEventListener("click", ev => { ev.stopPropagation(); onClick(n); });
+    g.addEventListener("dblclick", ev => {
+      ev.stopPropagation();
+      if (n.type === "branch") toggleBranch(n);
+    });
+    g.addEventListener("pointerenter", () => onHover(n, true));
+    g.addEventListener("pointerleave", () => onHover(n, false));
+    nodeEls.set(n, { g });
+  }
+
+  /* floating hover label for unlabeled nodes (refs, children) — recreate each render */
+  hoverG = el("g", { class: "hover-pill hidden" }, gNode);
+  hoverRect = el("rect", { class: "pill", rx: 9.5, height: 19 }, hoverG);
+  hoverText = el("text", { class: "pill-text", y: 2.5 }, hoverG);
+}
+
+let hoverG, hoverRect, hoverText;
+function showHover(n, text) {
+  const lines = pillLines(trunc(text, 120), 11, 300, 3), fs = 11;
+  const w = Math.max(...lines.map(l => textW(l, fs)));
+  const lh = 13, h = lines.length * lh + 6;
+  hoverG.setAttribute("transform", `translate(${n.x},${n.y - n.r - 14 - h / 2})`);
+  hoverRect.setAttribute("x", -w / 2 - 8); hoverRect.setAttribute("y", -h / 2);
+  hoverRect.setAttribute("width", w + 16); hoverRect.setAttribute("height", h);
+  hoverText.setAttribute("text-anchor", "middle");
+  hoverText.textContent = "";
+  lines.forEach((line, i) => {
+    const t = document.createElementNS(NS, "tspan");
+    t.setAttribute("x", 0);
+    t.setAttribute("y", (i - (lines.length - 1) / 2) * lh + 3.5);
+    t.textContent = line;
+    hoverText.appendChild(t);
+  });
+  hoverG.classList.remove("hidden");
+}
+function hideHover() { hoverG.classList.add("hidden"); }
+
+/* ================= view (zoom / pan / fit) ================= */
+let view = { x: 0, y: 0, k: 1 };
+function draw() { gZoom.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`); }
+function fitView() {
+  const { W, H } = measure();
+  const need = (WEDGE_OUT + RING_CHILD + 90) * 2;
+  let k = Math.min(1.05, Math.min(W, H) / need);
+  /* never let a degenerate measurement scale the graph to nothing */
+  view.k = (isFinite(k) && k > 0.05) ? k : 0.6;
+  view.x = (W - need * view.k) / 2;
+  view.y = (H - need * view.k) / 2;
+  draw();
+}
+
+/* ================= interactions ================= */
+function onClick(n) {
+  showPanel(n);   /* branches open their summary panel; double-click toggles collapse */
+}
+function toggleBranch(bn) {
+  const s = sectors.find(x => x.branchNode === bn);
+  if (!s) return;
+  bn.collapsed = !bn.collapsed;
+  applyVisibility();
+}
+function applyVisibility() {
+  for (const s of sectors) {
+    s.wedgeEl.classList.toggle("dim", s.branchNode.collapsed);
+    for (const l of s.leaves) {
+      const off = s.branchNode.collapsed;
+      nodeEls.get(l).g.classList.toggle("off", off);
+      if (l.__edgeEl) l.__edgeEl.classList.toggle("off", off);
+      for (const c of (l.kids || [])) {
+        nodeEls.get(c).g.classList.add("off");
+        if (c.__edgeEl) c.__edgeEl.classList.add("off");
+      }
+    }
+  }
+}
+function expandAll() {
+  for (const s of sectors) s.branchNode.collapsed = false;
+  applyVisibility();
+}
+function collapseAll() {
+  for (const s of sectors) s.branchNode.collapsed = true;
+  applyVisibility();
+}
+
+function onHover(n, on) {
+  if (n.__edgeEl) n.__edgeEl.classList.toggle("hi", on);
+  if (!on) { hideHover(); return; }
+  if (n.type === "branch" && n.summary) showHover(n, n.summary);
+  else if (n.type === "ref" || (n.kids && n.kids.length)) showHover(n, n.label);
+}
+
+/* pan & zoom */
+const stage = document.getElementById("stage");
+function toWorld(px, py) { return [(px - view.x) / view.k, (py - view.y) / view.k]; }
+stage.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  const f = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+  const nk = Math.min(4, Math.max(.2, view.k * f));
+  view.x = ev.clientX - (ev.clientX - view.x) * nk / view.k;
+  view.y = ev.clientY - (ev.clientY - view.y) * nk / view.k;
+  view.k = nk; draw();
+}, { passive: false });
+let pan = null;
+stage.addEventListener("pointerdown", ev => {
+  if (ev.target.closest("#panel,#hdr,#bar,#legend") || ev.target.closest(".node")) return;
+  pan = { x: ev.clientX, y: ev.clientY, vx: view.x, vy: view.y };
+  stage.classList.add("dragging");
+});
+window.addEventListener("pointermove", ev => {
+  if (pan) { view.x = pan.vx + ev.clientX - pan.x; view.y = pan.vy + ev.clientY - pan.y; draw(); }
+});
+window.addEventListener("pointerup", () => { pan = null; stage.classList.remove("dragging"); });
+stage.addEventListener("dblclick", fitView);
+
+/* ================= header / legend / stat ================= */
+(function () {
+  const authors = (meta.authors || []).join(", ");
+  const bits = [meta.year, meta.venue].filter(Boolean).join(" · ");
+  document.getElementById("hdr").innerHTML =
+    `<div class="t">${esc(meta.title || "")}</div>` +
+    (bits ? `<div class="m">${esc(bits)}</div>` : "") +
+    (authors ? `<div class="m">${esc(trunc(authors, 90))}</div>` : "") +
+    (meta.summary ? `<div class="s">${esc(trunc(meta.summary, 160))}</div>` : "") +
+    (meta.depth === "abstract-only" ? `<div class="s">⚠ 仅基于摘要生成</div>` : "") +
+    `<div class="s hint">点节点看详情 · 双击分支折叠 · 滚轮缩放 · 拖拽平移</div>`;
+})();
+document.getElementById("stat").textContent =
+  `${nodes.length} 节点 · ${sectors.reduce((a, s) => a + s.leaves.length, 0)} 内容点 · ` +
+  `${(DATA.references || []).filter(r => r.matched).length} 篇引用已联网匹配 · v3`;
+
+/* ================= detail panel ================= */
+const panel = document.getElementById("panel");
+
+/* rich content blocks: text | metrics | formula | image | table | list */
+function blockHtml(b) {
+  if (typeof b === "string") return `<p>${esc(b)}</p>`;
+  switch (b.type) {
+    case "text": return `<p>${esc(b.text)}</p>`;
+    case "metrics": return `<div class="metrics">📊 ${esc(b.text)}</div>`;
+    case "formula":
+      return `<div class="kv"><div class="k">${esc(b.caption || "公式")}</div>` +
+        `<div class="formula"><span class="ktx" data-tex="${encodeURIComponent(b.latex)}"></span></div></div>`;
+    case "image":
+      return `<figure><img src="${esc(b.url)}" loading="lazy" alt="${esc(b.caption || "论文插图")}"` +
+        ` onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'img-fallback',textContent:'🖼 ' + (this.alt||'图片') + '（需联网加载）'})">` +
+        (b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : "") + `</figure>`;
+    case "table": {
+      const head = `<tr>${b.headers.map(h => `<th>${esc(h)}</th>`).join("")}</tr>`;
+      const rows = b.rows.map(r =>
+        `<tr${b.highlight && b.highlight === r[0] ? ` class="hl"` : ""}>` +
+        r.map(c => `<td>${esc(c)}</td>`).join("") + `</tr>`).join("");
+      return (b.caption ? `<div class="tbl-cap">${esc(b.caption)}</div>` : "") +
+        `<div class="tbl-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+    }
+    case "list":
+      return `<ul class="blist">${(b.items || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>`;
+    default: return "";
+  }
+}
+
+function showPanel(n) {
+  const badge = document.getElementById("p-badge");
+  const title = document.getElementById("p-title");
+  const body = document.getElementById("p-body");
+  const bc = BRANCH_KEY[n.group] || { cls: "c-ref", fallback: "" };
+  badge.style.background = `var(--${bc.cls})`;
+  badge.textContent = ((DATA.branches && DATA.branches[n.group] && DATA.branches[n.group].label) || bc.fallback) || "详情";
+  title.textContent = n.title || n.label;
+
+  const parts = [];
+  if (n.parent) parts.push(`<a class="back" data-back="${n.parent.id}">⟵ ${esc(n.parent.label)}</a>`);
+  if (n.source) parts.push(`<div><span class="source">来源：${esc(n.source)}</span></div>`);
+
+  if (n.type === "branch") {
+    const s = sectors.find(x => x.branchNode === n);
+    if (n.summary) parts.push(`<p>${esc(n.summary)}</p>`);
+    parts.push(`<div class="actions"><a data-toggle="1">${n.collapsed ? "▸ 展开此分支" : "▾ 折叠此分支"}</a></div>`);
+    if (s && s.leaves.length) {
+      parts.push(`<div class="kv"><div class="k">包含 ${s.leaves.length} 个节点 · 点击查看</div></div><div class="children">` +
+        s.leaves.map(l =>
+          `<div class="child-row" data-id="${l.id}"><span class="dot" style="background:var(--${l.color})"></span>` +
+          `<span class="cl">${esc(trunc(l.label, 26))}</span>` +
+          (l.metrics ? `<span class="cm">${esc(trunc(l.metrics, 46))}</span>` : "") + `</div>`
+        ).join("") + `</div>`);
+    }
+  } else {
+    if (n.type === "artifact" && n.kind) parts.push(`<span class="tag">${esc(n.kind)}</span>`);
+    if (n.relation) parts.push(`<div class="kv"><div class="k">与本论文的关系</div>${esc(n.relation)}</div>`);
+    if (n.detail) parts.push(`<p>${esc(n.detail)}</p>`);
+    if (n.metrics) parts.push(`<div class="metrics">📊 ${esc(n.metrics)}</div>`);
+    if (n.blocks) parts.push(n.blocks.map(blockHtml).join(""));
+
+    const bits = [];
+    if (n.year || (n.s2 && n.s2.year)) bits.push(esc(String(n.year || n.s2.year)));
+    const venue = n.venue || (n.s2 && n.s2.venue);
+    if (venue) bits.push(esc(venue));
+    const cc = n.s2 && n.s2.citationCount;
+    if (cc != null) bits.push(`被引 ${esc(cc)}`);
+    if (n.matched === false && n.type === "ref") bits.push("未联网匹配");
+    if (n.inferred) parts.push(`<span class="tag">由论文推断</span>`);
+    if (bits.length) parts.push(`<div class="kv"><div class="k">${bits.join(" · ")}</div></div>`);
+
+    const abs = (n.s2 && n.s2.abstract) || n.abstract;
+    if (abs) parts.push(`<div class="kv"><div class="k">摘要</div><div class="abstract">${esc(abs)}</div></div>`);
+    else if (n.type === "ref") parts.push(`<div class="kv"><div class="k">摘要</div><div class="abstract">未获取（离线或未匹配）。可点击下方链接查看原文。</div></div>`);
+
+    const acts = [];
+    /* external artifact (code repo, dataset, demo video, docs …) */
+    if (n.url) acts.push(`<a class="primary" target="_blank" rel="noopener" href="${esc(n.url)}">↗ 打开${n.kind ? "　" + esc(n.kind) : ""}</a>`);
+    const q = n.search_query || n.title || n.label;
+    if (n.type !== "root" && n.type !== "artifact") {
+      acts.push(`<a target="_blank" rel="noopener" href="https://arxiv.org/search/?searchtype=all&query=${encodeURIComponent(q)}">arXiv 搜索</a>`);
+      acts.push(`<a target="_blank" rel="noopener" href="https://scholar.google.com/scholar?q=${encodeURIComponent(q)}">Google Scholar</a>`);
+    }
+    const ext = (n.s2 && n.s2.externalIds) || {};
+    if (ext.DOI) acts.push(`<a target="_blank" rel="noopener" href="https://doi.org/${esc(ext.DOI)}">DOI 原文</a>`);
+    if (ext.ArXiv) acts.push(`<a target="_blank" rel="noopener" href="https://arxiv.org/abs/${esc(ext.ArXiv)}">arXiv 页面</a>`);
+    if (n.type === "root") {
+      const seen = new Set();
+      const push = (url, label) => {
+        if (!url || seen.has(url)) return;      /* an artifact may repeat the arXiv link */
+        seen.add(url);
+        acts.push(`<a target="_blank" rel="noopener" href="${esc(url)}">${esc(label)}</a>`);
+      };
+      if (meta.arxiv_id) push(`https://arxiv.org/abs/${meta.arxiv_id}`, "arXiv 页面");
+      if (meta.doi) push(`https://doi.org/${meta.doi}`, "DOI 原文");
+      /* every known artifact reachable straight from the paper node */
+      for (const a of (DATA.artifacts || [])) push(a.url, a.label);
+    }
+    if (acts.length) parts.push(`<div class="actions">${acts.join("")}</div>`);
+  }
+
+  body.innerHTML = parts.join("");
+  panel.classList.add("open");
+  body.scrollTop = 0;
+
+  /* wire dynamic controls */
+  const backEl = body.querySelector("[data-back]");
+  if (backEl) backEl.addEventListener("click", () => showPanel(byId[backEl.dataset.back]));
+  const togEl = body.querySelector("[data-toggle]");
+  if (togEl) togEl.addEventListener("click", () => {
+    toggleBranch(n);
+    togEl.textContent = n.collapsed ? "▸ 展开此分支" : "▾ 折叠此分支";
+  });
+  body.querySelectorAll(".child-row").forEach(r =>
+    r.addEventListener("click", () => showPanel(byId[r.dataset.id])));
+
+  /* render formulas (KaTeX via CDN; degrade to latex source offline) */
+  const texes = body.querySelectorAll(".ktx");
+  if (!texes.length) return;
+  if (typeof katex === "undefined") {
+    texes.forEach(el => {
+      el.outerHTML = `<code class="latex-src">${esc(decodeURIComponent(el.dataset.tex))}</code>`;
+    });
+    return;
+  }
+  texes.forEach(el => {
+    try {
+      katex.render(decodeURIComponent(el.dataset.tex), el, { displayMode: true, throwOnError: false });
+    } catch (e) {
+      el.outerHTML = `<code class="latex-src">${esc(decodeURIComponent(el.dataset.tex))}</code>`;
+    }
+  });
+}
+document.getElementById("p-close").addEventListener("click", () => panel.classList.remove("open"));
+
+/* ================= toolbar ================= */
+document.getElementById("btn-expand").addEventListener("click", expandAll);
+document.getElementById("btn-collapse").addEventListener("click", collapseAll);
+document.getElementById("btn-fit").addEventListener("click", fitView);
+document.getElementById("btn-theme").addEventListener("click", () => {
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+(function () {
+  if (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) {
+    document.documentElement.dataset.theme = "dark";
+  }
+})();
+
+/* search filter */
+document.getElementById("search").addEventListener("input", ev => {
+  const q = ev.target.value.trim().toLowerCase();
+  for (const n of nodes) {
+    const rec = nodeEls.get(n);
+    if (!rec) continue;
+    if (!q) { rec.g.classList.remove("dimmed"); continue; }
+    const hay = (n.label + " " + (n.detail || "") + " " + (n.metrics || "") + " " + ((n.s2 || {}).abstract || "")).toLowerCase();
+    rec.g.classList.toggle("dimmed", !hay.includes(q));
+  }
+});
+
+/* title */
+document.title = meta.title ? trunc(meta.title, 40) + " · Paper Graph" : "Paper Graph";
+
+/* ================= boot ================= */
+/* Re-fit only when the stage's size actually changed, so a spurious observer
+   callback never stomps the user's own zoom/pan or a resize storm. */
+let lastW = -1, lastH = -1, resizeT = null;
+function relayout(force) {
+  const { W, H } = measure();
+  if (!force && W === lastW && H === lastH) return;
+  lastW = W; lastH = H;
+  computeLayout(); render(); applyVisibility(); fitView();
+}
+function scheduleRelayout() { clearTimeout(resizeT); resizeT = setTimeout(relayout, 150); }
+
+/* Record the measured size before laying out, so that if anything below throws
+   the failure banner shows real numbers rather than a generic message. */
+const bootWarn = document.getElementById("boot-warn");
+measure();
+(function () {
+  const el = document.getElementById("bw-info");
+  if (el) el.textContent = "诊断：stage 实测 " + VW + "×" + VH +
+    "，window " + window.innerWidth + "×" + window.innerHeight +
+    "，dpr " + (window.devicePixelRatio || 1);
+})();
+
+relayout(true);
+
+/* Hide the banner only once nodes are actually on screen. */
+if (bootWarn && document.querySelectorAll("#svg g.node").length) {
+  bootWarn.style.display = "none";
+}
+
+window.addEventListener("resize", scheduleRelayout);
+/* window "resize" alone is not enough: a preview pane can lay this page out
+   only after our script has run, or hand us a real size without ever firing
+   a window resize. Observe the element itself. */
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(scheduleRelayout);
+  const el = document.getElementById("stage");
+  if (el) ro.observe(el);
+  ro.observe(document.documentElement);
+}
+/* last-resort refits in case the first layout ran before we had a real size */
+window.addEventListener("load", scheduleRelayout);
+setTimeout(scheduleRelayout, 400);
+</script>
+</body>
+</html>

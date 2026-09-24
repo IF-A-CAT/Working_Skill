@@ -1,0 +1,18 @@
+{
+  "name": "thesis-polish",
+  "version": "1.0.0",
+  "description": "中文理工科研究生毕业论文的写作风格约束与审校，含可本地化的论文专属约束层。派生自 lmcggg/graduate-thesis-polish-and-write-skill。",
+  "author": {
+    "name": "lmcggg (upstream) / IF-A-CAT (localization)",
+    "url": "https://github.com/lmcggg/graduate-thesis-polish-and-write-skill"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/lmcggg/graduate-thesis-polish-and-write-skill",
+  "keywords": [
+    "thesis",
+    "chinese",
+    "writing",
+    "review",
+    "latex"
+  ]
+}

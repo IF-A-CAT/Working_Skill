@@ -1,0 +1,48 @@
+{
+  "name": "working-skill",
+  "owner": {
+    "name": "IF-A-CAT",
+    "url": "https://github.com/IF-A-CAT"
+  },
+  "description": "IF-A-CAT 自写与改造的 Claude Code skills 集合。",
+  "plugins": [
+    {
+      "name": "paper-graph",
+      "source": "./plugins/paper-graph",
+      "description": "把一篇论文拆成可交互知识图谱网页：背景、核心创新、实验与结果、结论，外加精选引用网络、可点开的未来方向与资源分支。支持 arXiv 链接或本地 PDF。",
+      "category": "research",
+      "keywords": [
+        "paper",
+        "knowledge-graph",
+        "literature",
+        "visualization",
+        "semantic-scholar"
+      ],
+      "license": "MIT",
+      "author": {
+        "name": "IF-A-CAT",
+        "url": "https://github.com/IF-A-CAT"
+      }
+    },
+    {
+      "name": "thesis-polish",
+      "source": "./plugins/thesis-polish",
+      "description": "中文理工科研究生毕业论文的写作风格约束与审校。60 多条规则、两个核心自检问题、基于范例论文风格指纹的对照工作流，另有一层可本地化的论文专属约束。派生自 lmcggg/graduate-thesis-polish-and-write-skill，本副本对其做了通用化改写并补上约束层模板。",
+      "category": "writing",
+      "keywords": [
+        "thesis",
+        "chinese",
+        "writing",
+        "review",
+        "latex",
+        "style"
+      ],
+      "license": "MIT",
+      "author": {
+        "name": "lmcggg (upstream) / IF-A-CAT (localization)",
+        "url": "https://github.com/lmcggg/graduate-thesis-polish-and-write-skill"
+      },
+      "homepage": "https://github.com/lmcggg/graduate-thesis-polish-and-write-skill"
+    }
+  ]
+}

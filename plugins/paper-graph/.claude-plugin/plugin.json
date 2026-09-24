@@ -1,0 +1,16 @@
+{
+  "name": "paper-graph",
+  "version": "1.0.0",
+  "description": "把一篇论文拆成可交互知识图谱网页：背景、核心创新、实验与结果、结论，外加精选引用网络、可点开的未来方向与资源分支。",
+  "author": {
+    "name": "IF-A-CAT",
+    "url": "https://github.com/IF-A-CAT"
+  },
+  "license": "MIT",
+  "keywords": [
+    "paper",
+    "knowledge-graph",
+    "literature",
+    "visualization"
+  ]
+}
